@@ -6,7 +6,7 @@ import pandas as pd
 
 
 class Printer:
-    def __init__(self, headers: List[Tuple], model, justify: Callable, decimals: int, header_kwargs: Dict):
+    def __init__(self, headers: List[Tuple[str, Any]], model, justify: Callable, decimals: int, header_kwargs: Dict):
         self.headers = headers
         self.model = model
         self.decimals = decimals

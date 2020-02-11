@@ -266,7 +266,8 @@ class ParametricUnivariateFitter(UnivariateFitter):
     _KNOWN_MODEL = False
     _MIN_PARAMETER_VALUE = 1e-9
     _scipy_fit_method = "L-BFGS-B"
-    _scipy_fit_options = dict()
+    _scipy_fit_options: Dict[str, Any]
+    _fitted_parameter_names: List[str]
 
     def __init__(self, *args, **kwargs):
         super(ParametricUnivariateFitter, self).__init__(*args, **kwargs)
@@ -1127,7 +1128,7 @@ class RegressionFitter(BaseFitter):
 class ParametricRegressionFitter(RegressionFitter):
 
     _scipy_fit_method = "BFGS"
-    _scipy_fit_options = dict()
+    _scipy_fit_options: Dict[str, Any] = dict()
     _KNOWN_MODEL = False
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0):
@@ -1249,7 +1250,7 @@ class ParametricRegressionFitter(RegressionFitter):
         robust=False,
         initial_point=None,
         entry_col=None,
-    ) -> "ParametericAFTRegressionFitter":
+    ) -> "ParametricRegressionFitter":
         """
         Fit the accelerated failure time model to a left-censored dataset.
 
@@ -1343,7 +1344,7 @@ class ParametricRegressionFitter(RegressionFitter):
         robust=False,
         initial_point=None,
         entry_col=None,
-    ):
+    ) -> "ParametricRegressionFitter":
         """
         Fit the regression model to a right-censored dataset.
 
@@ -1784,7 +1785,7 @@ class ParametricRegressionFitter(RegressionFitter):
                 score_vector = ll_gradient(params, ts, e, w, s, xs)
                 J += np.outer(score_vector, score_vector)
 
-            return self.variance_matrix_.values @ J @ self.variance_matrix_.values
+            return self.variance_matrix_.values @ J @ self.variance_matrix_.valuesg
 
     def _compute_confidence_intervals(self) -> pd.DataFrame:
         z = utils.inv_normal_cdf(1 - self.alpha / 2)
@@ -2305,6 +2306,8 @@ class ParametricRegressionFitter(RegressionFitter):
 class ParametericAFTRegressionFitter(ParametricRegressionFitter):
 
     _KNOWN_MODEL = True
+    _primary_parameter_name: str
+    _ancillary_parameter_name: str
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0, fit_intercept=True, model_ancillary=False):
         super(ParametericAFTRegressionFitter, self).__init__(alpha=alpha)

@@ -18,8 +18,7 @@ from autograd import elementwise_grad
 from lifelines.fitters import RegressionFitter, ParametricRegressionFitter
 from lifelines.fitters.mixins import SplineFitterMixin, ProportionalHazardMixin
 from lifelines.plotting import set_kwargs_drawstyle
-from lifelines.statistics import _chisq_test_p_value, proportional_hazard_test, TimeTransformers, StatisticalResult
-from lifelines.utils.lowess import lowess
+from lifelines.statistics import _chisq_test_p_value, StatisticalResult
 from lifelines.utils.printer import Printer
 from lifelines.utils.safe_exp import safe_exp
 from lifelines.utils.concordance import _concordance_summary_statistics, _concordance_ratio
@@ -550,7 +549,6 @@ estimate the variances. See paper "Variance estimation when using inverse probab
         self._batch_mode = decision == _BatchVsSingle.BATCH
 
         n, d = X.shape
-        self.path = []
 
         # make sure betas are correct size.
         if initial_point is not None:
@@ -570,7 +568,6 @@ estimate the variances. See paper "Variance estimation when using inverse probab
 
         while converging:
             beta += step_size * delta
-            self.path.append(beta.copy())
 
             i += 1
 
@@ -1348,7 +1345,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
         # Print information about data first
         justify = string_justify(25)
 
-        headers = []
+        headers: List[Tuple[str, Any]] = []
         headers.append(("duration col", "'%s'" % self.duration_col))
 
         if self.event_col:

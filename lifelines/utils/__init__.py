@@ -1714,7 +1714,8 @@ def find_best_parametric_model(event_times, event_observed=None, evaluation: str
 
     evaluation_lookup = {
         "AIC": lambda model: 2 * len(model._fitted_parameter_names) - 2 * model.log_likelihood_,
-        "BIC": lambda model: 2 * len(model._fitted_parameter_names) - 2 * model.log_likelihood_ * np.log(T.shape[0]),
+        "BIC": lambda model: 2 * len(model._fitted_parameter_names)
+        - 2 * model.log_likelihood_ * np.log(event_times.shape[0]),
     }
 
     eval = evaluation_lookup[evaluation]
