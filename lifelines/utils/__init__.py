@@ -9,6 +9,7 @@ from typing import Union, Any, Tuple, List, Callable, Optional
 
 import numpy as np
 from numpy import ndarray
+from autograd import numpy as anp
 from scipy.linalg import solve
 from scipy import stats
 from scipy.integrate import quad, trapz
@@ -943,10 +944,13 @@ def _get_index(X) -> List[Any]:
     # we need a unique index because these are about to become column names.
     if isinstance(X, pd.DataFrame) and X.index.is_unique:
         index = list(X.index)
+    elif isinstance(X, pd.DataFrame) and not X.index.is_unique:
+        warnings.warn("DataFrame Index is not unique, defaulting to incrementing index instead.")
+        index = list(range(X.shape[0]))
     elif isinstance(X, pd.Series):
         return [0]
     else:
-        # If it's not a dataframe, order is up to user
+        # If it's not a dataframe or index is not unique, order is up to user
         index = list(range(X.shape[0]))
     return index
 
@@ -1754,3 +1758,18 @@ def find_best_parametric_model(event_times, event_observed=None, evaluation: str
             continue
 
     return best_model, best_score
+
+
+class SplineFitterMixin:
+    _scipy_fit_method = "SLSQP"
+    _scipy_fit_options = {"ftol": 1e-10}
+
+    @staticmethod
+    def relu(x):
+        return anp.maximum(0, x)
+
+    def basis(self, x, knot, min_knot, max_knot):
+        lambda_ = (max_knot - knot) / (max_knot - min_knot)
+        return self.relu(x - knot) ** 3 - (
+            lambda_ * self.relu(x - min_knot) ** 3 + (1 - lambda_) * self.relu(x - max_knot) ** 3
+        )

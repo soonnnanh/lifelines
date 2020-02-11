@@ -3,20 +3,26 @@ import time
 from datetime import datetime
 import warnings
 from textwrap import dedent, fill
-import numpy as np
-import pandas as pd
 from typing import Callable, Iterator, List, Optional, Tuple, Union, Any
 
-from numpy import dot, einsum, log, exp, zeros, arange, multiply
+import numpy as np
+from numpy import dot, einsum, log, exp, zeros, arange, multiply, ndarray
 from scipy.linalg import solve as spsolve, LinAlgError, norm, inv
 from scipy.integrate import trapz
 from scipy import stats
+import pandas as pd
+from pandas.core.frame import DataFrame
+from pandas.core.indexes.base import Index
+from pandas.core.series import Series
+from autograd import numpy as anp
+from autograd import elementwise_grad
 
-from lifelines.fitters import RegressionFitter
+from lifelines.fitters import RegressionFitter, ParametricRegressionFitter
 from lifelines.plotting import set_kwargs_drawstyle
 from lifelines.statistics import _chisq_test_p_value, proportional_hazard_test, TimeTransformers, StatisticalResult
 from lifelines.utils.lowess import lowess
 from lifelines.utils.printer import Printer
+from lifelines.utils.safe_exp import safe_exp
 from lifelines.utils.concordance import _concordance_summary_statistics, _concordance_ratio
 from lifelines.utils import (
     _get_index,
@@ -41,28 +47,63 @@ from lifelines.utils import (
     CensoringType,
     interpolate_at_times,
     format_p_value,
+    SplineFitterMixin,
 )
-
-from numpy import ndarray
-from pandas.core.frame import DataFrame
-from pandas.core.indexes.base import Index
-from pandas.core.series import Series
-from autograd import numpy as anp
-from autograd import elementwise_grad
 
 __all__ = ["CoxPHFitter"]
 
 CONVERGENCE_DOCS = "Please see the following tips in the lifelines documentation: https://lifelines.readthedocs.io/en/latest/Examples.html#problems-with-convergence-in-the-cox-proportional-hazard-model"
 
-# From https://www.cs.ubc.ca/cgi-bin/tr/2009/TR-2009-19.pdf
-soft_abs = lambda x, a: 1 / a * (anp.logaddexp(0, -a * x) + anp.logaddexp(0, a * x))
-d_soft_abs = elementwise_grad(soft_abs)
-dd_soft_abs = elementwise_grad(d_soft_abs)
+
+class _PHSplineFitter(ParametricRegressionFitter, SplineFitterMixin):
+    """
+    Proportional Hazard model with single-knot cublic splines
+
+    References
+    ------------
+    Royston, P., & Parmar, M. K. B. (2002). Flexible parametric proportional-hazards and proportional-odds models for censored survival data, with application to prognostic modelling and estimation of treatment effects. Statistics in Medicine, 21(15), 2175–2197. doi:10.1002/sim.1203 
+    """
+
+    _KNOWN_MODEL = True
+
+    def __init__(self, n_baseline_knots=1, *args, **kwargs):
+        self.n_baseline_knots = coalesce(
+            n_baseline_knots, 1
+        )  # TODO: this needs to be better. Should be no need to a coalesce
+        self._fitted_parameter_names = ["beta_"] + ["phi%d_" % i for i in range(1, self.n_baseline_knots + 2)]
+        super(_PHSplineFitter, self).__init__(*args, **kwargs)
+
+    def set_knots(self, T, E):
+        self.knots = np.percentile(T[E.astype(bool)], np.linspace(5, 95, self.n_baseline_knots + 2))
+        return
+
+    def _pre_fit_model(self, Ts, E, df):
+        self.set_knots(Ts[0], E)
+
+    def _create_initial_point(self, Ts, E, entries, weights, Xs):
+        return {
+            **{"beta_": np.zeros(len(Xs.mappings["beta_"])), "phi1_": np.array([0.5]), "phi2_": np.array([-0.5])},
+            **{"phi%d_" % i: np.array([0.0]) for i in range(3, self.n_baseline_knots + 2)},
+        }
+
+    def _cumulative_hazard(self, params, T, Xs):
+        lT = anp.log(T)
+        H = safe_exp(anp.dot(Xs["beta_"], params["beta_"]) + params["phi1_"] * lT)
+
+        for i in range(2, self.n_baseline_knots + 2):
+            H *= safe_exp(
+                params["phi%d_" % i]
+                * self.basis(lT, anp.log(self.knots[i - 1]), anp.log(self.knots[0]), anp.log(self.knots[-1]))
+            )
+        return H
 
 
-class BatchVsSingle:
-    @staticmethod
-    def decide(batch_mode: Optional[bool], n_unique: int, n_total: int, n_vars: int) -> str:
+class _BatchVsSingle:
+
+    BATCH = "batch"
+    SINGLE = "single"
+
+    def decide(self, batch_mode: Optional[bool], n_unique: int, n_total: int, n_vars: int) -> str:
         frac_dups = n_unique / n_total
         if batch_mode or (
             # https://github.com/CamDavidsonPilon/lifelines/issues/591 for original issue.
@@ -70,20 +111,20 @@ class BatchVsSingle:
             (batch_mode is None)
             and (
                 (
-                    6.153952e-01
-                    + -3.927241e-06 * n_total
-                    + 2.544118e-11 * n_total ** 2
-                    + 2.071377e00 * frac_dups
-                    + -9.724922e-01 * frac_dups ** 2
-                    + 9.138711e-06 * n_total * frac_dups
-                    + -5.617844e-03 * n_vars
-                    + -4.402736e-08 * n_vars * n_total
+                    6.153_952e-01
+                    + -3.927_241e-06 * n_total
+                    + 2.544_118e-11 * n_total ** 2
+                    + 2.071_377e00 * frac_dups
+                    + -9.724_922e-01 * frac_dups ** 2
+                    + 9.138_711e-06 * n_total * frac_dups
+                    + -5.617_844e-03 * n_vars
+                    + -4.402_736e-08 * n_vars * n_total
                 )
                 < 1
             )
         ):
-            return "batch"
-        return "single"
+            return self.BATCH
+        return self.SINGLE
 
 
 class CoxPHFitter(RegressionFitter):
@@ -100,7 +141,10 @@ class CoxPHFitter(RegressionFitter):
 
       tie_method: string, optional
         specify how the fitter should deal with ties. Currently only
-        'Efron' is available.
+        'efron' is available.
+
+      baseline_estimation_method: string, optional
+        specify how the fitter should estimate the baseline. `breslow` or `spline`
 
       penalizer: float, optional (default=0.0)
         Attach a penalty to the size of the coefficients during regression. This improves
@@ -158,22 +202,26 @@ class CoxPHFitter(RegressionFitter):
 
     def __init__(
         self,
-        tie_method: str = "Efron",
+        tie_method: str = "efron",
+        baseline_estimation_method: str = "breslow",
         penalizer: float = 0.0,
         strata: Optional[Union[List[str], str]] = None,
-        l1_ratio=0.0,
-        **kwargs
+        l1_ratio: float = 0.0,
+        n_baseline_knots: int = 1,
+        **kwargs,
     ) -> None:
         super(CoxPHFitter, self).__init__(**kwargs)
         if penalizer < 0:
             raise ValueError("penalizer parameter must be >= 0.")
-        if tie_method != "Efron":
-            raise NotImplementedError("Only Efron is available at the moment.")
+        if tie_method != "efron":
+            raise NotImplementedError("Only 'efron' is available at the moment.")
 
         self.tie_method = tie_method
         self.penalizer = penalizer
         self.strata = strata
         self.l1_ratio = l1_ratio
+        self.baseline_estimation_method = baseline_estimation_method
+        self.n_baseline_knots = n_baseline_knots
 
     @CensoringType.right_censoring
     def fit(
@@ -324,25 +372,26 @@ class CoxPHFitter(RegressionFitter):
             normalize(X.values, self._norm_mean.values, self._norm_std.values), index=X.index, columns=X.columns
         )
 
-        params_ = self._fit_model(
+        params_, ll_, variance_matrix_, baseline_hazard_, baseline_cumulative_hazard_ = self._fit_model(
             X_norm, T, E, weights=weights, initial_point=initial_point, show_progress=show_progress, step_size=step_size
         )
 
-        self.params_ = pd.Series(params_, index=X.columns, name="coef") / self._norm_std
+        self.log_likelihood_ = ll_
+        self.variance_matrix_ = variance_matrix_
+        self.params_ = pd.Series(params_, index=X.columns, name="coef")
         self.hazard_ratios_ = pd.Series(exp(self.params_), index=X.columns, name="exp(coef)")
-
-        self.variance_matrix_ = -inv(self._hessian_) / np.outer(self._norm_std, self._norm_std)
-        self.standard_errors_ = self._compute_standard_errors(X_norm, T, E, weights)
-        self.confidence_intervals_ = self._compute_confidence_intervals()
-
+        self.baseline_hazard_ = baseline_hazard_
+        self.baseline_cumulative_hazard_ = baseline_cumulative_hazard_
         self._predicted_partial_hazards_ = (
             self.predict_partial_hazard(X)
             .rename(columns={0: "P"})
             .assign(T=self.durations.values, E=self.event_observed.values, W=self.weights.values)
             .set_index(X.index)
         )
-        self.baseline_hazard_ = self._compute_baseline_hazards()
-        self.baseline_cumulative_hazard_ = self._compute_baseline_cumulative_hazard()
+
+        self.standard_errors_ = self._compute_standard_errors(X_norm, T, E, weights)
+        self.confidence_intervals_ = self._compute_confidence_intervals()
+
         self.baseline_survival_ = self._compute_baseline_survival()
 
         if hasattr(self, "_concordance_score_"):
@@ -418,7 +467,46 @@ estimate the variances. See paper "Variance estimation when using inverse probab
             if (W <= 0).any():
                 raise ValueError("values in weight column %s must be positive." % self.weights_col)
 
-    def _fit_model(
+    def _fit_model(self, *args, **kwargs):
+        if self.baseline_estimation_method == "breslow":
+            return self._fit_model_breslow(*args, **kwargs)
+        elif self.baseline_estimation_method == "spline":
+            return self._fit_model_spline(*args, **kwargs)
+        else:
+            raise ValueError("Invalid baseline estimate supplied.")
+
+    def _fit_model_breslow(
+        self,
+        X: DataFrame,
+        T: Series,
+        E: Series,
+        weights: Series,
+        initial_point: Optional[ndarray] = None,
+        step_size: Optional[float] = None,
+        show_progress: bool = True,
+    ):
+        beta_, ll_, hessian_ = self._newton_rhapson_for_efron_model(
+            X, T, E, weights, initial_point=initial_point, step_size=step_size, show_progress=show_progress
+        )
+
+        # compute the baseline hazard here.
+        predicted_partial_hazards_ = (
+            pd.DataFrame(np.exp(dot(X, beta_)), columns=["P"])
+            .assign(T=T.values, E=E.values, W=weights.values)
+            .set_index(X.index)
+        )
+        baseline_hazard_ = self._compute_baseline_hazards(predicted_partial_hazards_)
+        baseline_cumulative_hazard_ = self._compute_baseline_cumulative_hazard(baseline_hazard_)
+
+        # rescale parameters back to original scale.
+        params_ = beta_ / self._norm_std.values
+        variance_matrix_ = pd.DataFrame(
+            -inv(hessian_) / np.outer(self._norm_std, self._norm_std), index=X.columns, columns=X.columns
+        )
+
+        return params_, ll_, variance_matrix_, baseline_hazard_, baseline_cumulative_hazard_
+
+    def _newton_rhapson_for_efron_model(
         self,
         X: DataFrame,
         T: Series,
@@ -429,7 +517,7 @@ estimate the variances. See paper "Variance estimation when using inverse probab
         precision: float = 1e-07,
         show_progress: bool = True,
         max_steps: int = 500,
-    ) -> ndarray:  # pylint: disable=too-many-statements,too-many-branches
+    ):  # pylint: disable=too-many-statements,too-many-branches
         """
         Newton Rhaphson algorithm for fitting CPH model.
 
@@ -461,9 +549,14 @@ estimate the variances. See paper "Variance estimation when using inverse probab
         beta: (1,d) numpy array.
         """
 
-        decision = BatchVsSingle.decide(self._batch_mode, T.nunique(), X.shape[0], X.shape[1])
+        # soft penalizer functions, from https://www.cs.ubc.ca/cgi-bin/tr/2009/TR-2009-19.pdf
+        soft_abs = lambda x, a: 1 / a * (anp.logaddexp(0, -a * x) + anp.logaddexp(0, a * x))
+        d_soft_abs = elementwise_grad(soft_abs)
+        dd_soft_abs = elementwise_grad(d_soft_abs)
+
+        decision = _BatchVsSingle().decide(self._batch_mode, T.nunique(), X.shape[0], X.shape[1])
         get_gradients = getattr(self, "_get_efron_values_%s" % decision)
-        self._batch_mode = decision == "batch"
+        self._batch_mode = decision == _BatchVsSingle.BATCH
 
         n, d = X.shape
         self.path = []
@@ -480,7 +573,7 @@ estimate the variances. See paper "Variance estimation when using inverse probab
 
         delta = np.zeros_like(beta)
         converging = True
-        ll, previous_ll = 0.0, 0.0
+        ll_, previous_ll_ = 0.0, 0.0
         start = time.time()
         i = 0
 
@@ -492,22 +585,22 @@ estimate the variances. See paper "Variance estimation when using inverse probab
 
             if self.strata is None:
 
-                h, g, ll = get_gradients(X.values, T.values, E.values, weights.values, beta)
+                h, g, ll_ = get_gradients(X.values, T.values, E.values, weights.values, beta)
 
             else:
                 g = np.zeros_like(beta)
                 h = zeros((beta.shape[0], beta.shape[0]))
-                ll = 0
+                ll_ = 0
                 for _h, _g, _ll in self._partition_by_strata_and_apply(X, T, E, weights, get_gradients, beta):
                     g += _g
                     h += _h
-                    ll += _ll
+                    ll_ += _ll
 
             if i == 1 and np.all(beta == 0):
                 # this is a neat optimization, the null partial likelihood
                 # is the same as the full partial but evaluated at zero.
                 # if the user supplied a non-trivial initial point, we need to delay this.
-                self._ll_null_ = ll
+                self._ll_null_ = ll_
 
             if self.penalizer > 0:
                 g -= (
@@ -558,13 +651,13 @@ estimate the variances. See paper "Variance estimation when using inverse probab
             if show_progress:
                 print(
                     "\rIteration %d: norm_delta = %.5f, step_size = %.4f, ll = %.5f, newton_decrement = %.5f, seconds_since_start = %.1f"
-                    % (i, norm_delta, step_size, ll, newton_decrement, time.time() - start)
+                    % (i, norm_delta, step_size, ll_, newton_decrement, time.time() - start)
                 )
 
             # convergence criteria
             if norm_delta < precision:
                 converging, success = False, True
-            elif previous_ll != 0 and abs(ll - previous_ll) / (-previous_ll) < 1e-09:
+            elif previous_ll_ != 0 and abs(ll_ - previous_ll_) / (-previous_ll_) < 1e-09:
                 # this is what R uses by default
                 converging, success = False, True
             elif newton_decrement < precision:
@@ -575,7 +668,7 @@ estimate the variances. See paper "Variance estimation when using inverse probab
                 converging, success = False, False
             elif step_size <= 0.00001:
                 converging, success = False, False
-            elif abs(ll) < 0.0001 and norm_delta > 1.0:
+            elif abs(ll_) < 0.0001 and norm_delta > 1.0:
                 warnings.warn(
                     "The log-likelihood is getting suspiciously close to 0 and the delta is still large. There may be complete separation in the dataset. This may result in incorrect inference of coefficients. \
 See https://stats.stackexchange.com/q/11109/11867 for more.\n",
@@ -583,12 +676,8 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 )
                 converging, success = False, False
 
-            previous_ll = ll
+            previous_ll_ = ll_
             step_size = step_sizer.update(norm_delta).next()
-
-        self._hessian_ = hessian
-        self._score_ = gradient
-        self.log_likelihood_ = ll
 
         if show_progress and success:
             print("Convergence success after %d iterations." % (i))
@@ -609,7 +698,50 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 "Newton-Rhaphson failed to converge sufficiently in %d steps.\n" % max_steps, ConvergenceWarning
             )
 
-        return beta
+        return beta, ll_, hessian
+
+    def _fit_model_spline(
+        self,
+        X: DataFrame,
+        T: Series,
+        E: Series,
+        weights: Series,
+        initial_point: Optional[ndarray] = None,
+        show_progress: bool = True,
+        **kwargs,
+    ):
+        if self.strata is not None:
+            raise NotImplementedError("Spline estimation cannot be used with strata yet.")
+
+        df = X.copy()
+        df["T"] = T
+        df["E"] = E
+        df["weights"] = weights
+        df["constant"] = 1.0
+
+        regressors = {
+            **{"beta_": df.columns.difference(["T", "E", "weights"]), "phi1_": ["constant"]},
+            **{"phi%d_" % i: ["constant"] for i in range(2, self.n_baseline_knots + 2)},
+        }
+
+        cph = _PHSplineFitter(n_baseline_knots=self.n_baseline_knots)
+        cph.fit(
+            df, "T", "E", weights_col="weights", show_progress=show_progress, robust=self.robust, regressors=regressors
+        )
+        self._ll_null_ = cph._ll_null
+        baseline_hazard_ = cph.predict_hazard(df.mean()).rename(columns={0: "baseline hazard"})
+        baseline_cumulative_hazard_ = cph.predict_cumulative_hazard(df.mean()).rename(
+            columns={0: "baseline cumulative hazard"}
+        )
+
+        return (
+            cph.params_.loc["beta_"].drop("constant") / self._norm_std,
+            cph.log_likelihood_,
+            cph.variance_matrix_.loc["beta_", "beta_"].drop("constant").drop("constant", axis=1)
+            / np.outer(self._norm_std, self._norm_std),
+            baseline_hazard_,
+            baseline_cumulative_hazard_,
+        )
 
     def _get_efron_values_single(
         self, X: ndarray, T: ndarray, E: ndarray, weights: ndarray, beta: ndarray
@@ -740,102 +872,6 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
             tie_phi_x_x = zeros((d, d))
 
         return hessian, gradient, log_lik
-
-    @staticmethod
-    def _trivial_log_likelihood_batch(T, E, weights):
-        # used for log-likelihood test
-        n = T.shape[0]
-        log_lik = 0
-        _, counts = np.unique(-T, return_counts=True)
-        risk_phi = 0
-        pos = n
-
-        for count_of_removals in counts:
-
-            slice_ = slice(pos - count_of_removals, pos)
-
-            weights_at_t = weights[slice_]
-
-            phi_i = weights_at_t
-
-            # Calculate sums of Risk set
-            risk_phi = risk_phi + phi_i.sum()
-
-            # Calculate the sums of Tie set
-            deaths = E[slice_]
-
-            tied_death_counts = deaths.sum()
-            if tied_death_counts == 0:
-                # no deaths, can continue
-                pos -= count_of_removals
-                continue
-
-            weights_deaths = weights_at_t[-tied_death_counts:]
-            weight_count = weights_deaths.sum()
-
-            if tied_death_counts > 1:
-                tie_phi = phi_i[-tied_death_counts:].sum()
-                factor = log(risk_phi - arange(tied_death_counts) * tie_phi / tied_death_counts).sum()
-            else:
-                factor = log(risk_phi)
-
-            log_lik = log_lik - weight_count / tied_death_counts * factor
-            pos -= count_of_removals
-
-        return log_lik
-
-    @staticmethod
-    def _trivial_log_likelihood_single(T, E, weights):
-        # assumes sorted on T!
-
-        log_lik = 0
-        n = T.shape[0]
-
-        # Init risk and tie sums to zero
-        risk_phi, tie_phi = 0, 0
-        # Init number of ties and weights
-        weight_count = 0.0
-        tied_death_counts = 0
-
-        # Iterate backwards to utilize recursive relationship
-        for i in range(n - 1, -1, -1):
-            # Doing it like this to preserve shape
-            ti = T[i]
-            ei = E[i]
-
-            # Calculate phi values
-            phi_i = weights[i]
-            w = weights[i]
-
-            # Calculate sums of Risk set
-            risk_phi = risk_phi + phi_i
-
-            # Calculate sums of Ties, if this is an event
-            if ei:
-                tie_phi = tie_phi + phi_i
-
-                # Keep track of count
-                tied_death_counts += 1
-                weight_count += w
-
-            if i > 0 and T[i - 1] == ti:
-                # There are more ties/members of the risk set
-                continue
-            elif tied_death_counts == 0:
-                # Only censored with current time, move on
-                continue
-
-            if tied_death_counts > 1:
-                factor = log(risk_phi - arange(tied_death_counts) * tie_phi / tied_death_counts).sum()
-            else:
-                factor = log(risk_phi)
-            log_lik = log_lik - weight_count / tied_death_counts * factor
-
-            # reset tie values
-            tied_death_counts = 0
-            weight_count = 0.0
-            tie_phi = 0
-        return log_lik
 
     def _get_efron_values_batch(
         self, X: ndarray, T: ndarray, E: ndarray, weights: ndarray, beta: ndarray
@@ -1257,7 +1293,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
         if self.robust or self.cluster_col:
             se = np.sqrt(self._compute_sandwich_estimator(X, T, E, weights).diagonal())
         else:
-            se = np.sqrt(self.variance_matrix_.diagonal())
+            se = np.sqrt(self.variance_matrix_.values.diagonal())
         return pd.Series(se, name="se", index=self.params_.index)
 
     def _compute_sandwich_estimator(self, X: DataFrame, T: Series, E: Series, weights: Series) -> ndarray:
@@ -1332,16 +1368,23 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
             headers.append(("cluster col", "'%s'" % self.cluster_col))
         if self.penalizer > 0:
             headers.append(("penalizer", self.penalizer))
+            headers.append(("l1 ratio", self.l1_ratio))
         if self.robust or self.cluster_col:
             headers.append(("robust variance", True))
         if self.strata:
             headers.append(("strata", self.strata))
+        if self.baseline_estimation_method == "spline":
+            headers.append(("n baseline knots", self.n_baseline_knots))
 
         headers.extend(
             [
+                ("baseline estimation", self.baseline_estimation_method),
                 ("number of observations", "{:g}".format(self.weights.sum())),
                 ("number of events observed", "{:g}".format(self.weights[self.event_observed > 0].sum())),
-                ("partial log-likelihood", "{:.{prec}f}".format(self.log_likelihood_, prec=decimals)),
+                (
+                    "partial log-likelihood" if self.baseline_estimation_method == "breslow" else "log-likelihood",
+                    "{:.{prec}f}".format(self.log_likelihood_, prec=decimals),
+                ),
                 ("time fit was run", self._time_fit_was_called),
             ]
         )
@@ -1351,14 +1394,9 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
         p.print(style=style)
 
     def _trivial_log_likelihood(self):
-        if self._batch_mode:
-            return self._trivial_log_likelihood_batch(
-                self.durations.values, self.event_observed.values, self.weights.values
-            )
-        else:
-            return self._trivial_log_likelihood_single(
-                self.durations.values, self.event_observed.values, self.weights.values
-            )
+        df = pd.DataFrame({"T": self.durations, "E": self.event_observed, "W": self.weights})
+        trivial_model = self.__class__().fit(df, "E", weights_col="W", batch_mode=self.batch_mode)
+        return trivial_model.log_likelihood_
 
     def log_likelihood_ratio_test(self) -> StatisticalResult:
         """
@@ -1677,13 +1715,13 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
         baseline_hazard.index.name = None
         return baseline_hazard
 
-    def _compute_baseline_hazards(self) -> pd.DataFrame:
+    def _compute_baseline_hazards(self, predicted_partial_hazards_) -> pd.DataFrame:
         if self.strata:
 
             index = self.durations.unique()
             baseline_hazards_ = pd.DataFrame(index=index).sort_index()
 
-            for name, stratum_predicted_partial_hazards_ in self._predicted_partial_hazards_.groupby(self.strata):
+            for name, stratum_predicted_partial_hazards_ in predicted_partial_hazards_.groupby(self.strata):
                 baseline_hazards_ = baseline_hazards_.merge(
                     self._compute_baseline_hazard(stratum_predicted_partial_hazards_, name),
                     left_index=True,
@@ -1692,10 +1730,10 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 )
             return baseline_hazards_.fillna(0)
 
-        return self._compute_baseline_hazard(self._predicted_partial_hazards_, name="baseline hazard")
+        return self._compute_baseline_hazard(predicted_partial_hazards_, name="baseline hazard")
 
-    def _compute_baseline_cumulative_hazard(self) -> DataFrame:
-        cumulative = self.baseline_hazard_.cumsum()
+    def _compute_baseline_cumulative_hazard(self, baseline_hazard_) -> DataFrame:
+        cumulative = baseline_hazard_.cumsum()
         if not self.strata:
             cumulative = cumulative.rename(columns={"baseline hazard": "baseline cumulative hazard"})
         return cumulative
@@ -1782,7 +1820,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 exp_log_hazards[order],
                 yaxis_locations,
                 xerr=np.vstack([lower_errors[order], upper_errors[order]]),
-                **errorbar_kwargs
+                **errorbar_kwargs,
             )
             ax.set_xlabel("HR (%g%% CI)" % ((1 - self.alpha) * 100))
         else:
@@ -1871,7 +1909,8 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
             if covariate not in self.params_.index:
                 raise KeyError("covariate `%s` is not present in the original dataset" % covariate)
 
-        set_kwargs_drawstyle(kwargs, "steps-post")
+        drawstyle = "steps-post" if self.baseline_estimation_method == "breslow" else "default"
+        set_kwargs_drawstyle(kwargs, drawstyle)
 
         if self.strata is None:
             axes = kwargs.pop("ax", None) or plt.figure().add_subplot(111)
@@ -1887,7 +1926,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
 
             self.predict_survival_function(X).plot(ax=axes, **kwargs)
             if plot_baseline:
-                self.baseline_survival_.plot(ax=axes, ls=":", color="k", drawstyle="steps-post")
+                self.baseline_survival_.plot(ax=axes, ls=":", color="k", drawstyle=drawstyle)
 
         else:
             axes = []
@@ -1909,7 +1948,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 self.predict_survival_function(X).plot(ax=ax, **kwargs)
                 if plot_baseline:
                     baseline_survival_.plot(
-                        ax=ax, ls=":", label="stratum %s baseline survival" % str(stratum), drawstyle="steps-post"
+                        ax=ax, ls=":", label="stratum %s baseline survival" % str(stratum), drawstyle=drawstyle
                     )
                 plt.legend()
                 axes.append(ax)
@@ -2129,7 +2168,7 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
     def score_(self) -> float:
         """
         The concordance score (also known as the c-index) of the fit.  The c-index is a generalization of the ROC AUC
-        to survival data, including censorships.
+        to survival data, including censoring.
 
         For this purpose, the ``score_`` is a measure of the predictive accuracy of the fitted model
         onto the training dataset.

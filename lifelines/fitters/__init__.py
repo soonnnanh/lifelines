@@ -6,6 +6,7 @@ import warnings
 from datetime import datetime
 from textwrap import dedent
 from typing import *
+from inspect import getfullargspec
 
 import numpy as np
 from numpy.linalg import inv, pinv
@@ -1137,6 +1138,9 @@ class ParametricRegressionFitter(RegressionFitter):
     def _check_values_post_fitting(self, df, T, E, weights, entries):
         utils.check_complete_separation(df, E, T, self.event_col)
 
+    def _pre_fit_model(self, Ts, E, df):
+        return
+
     def _check_values_pre_fitting(self, df, T, E, weights, entries):
         utils.check_for_numeric_dtypes_or_raise(df)
         utils.check_nans_or_infs(df)
@@ -1603,6 +1607,7 @@ class ParametricRegressionFitter(RegressionFitter):
         self._norm_std[self._constant_cols] = 1.0
         _norm_std[_norm_std < 1e-8] = 1.0
 
+        self._pre_fit_model(Ts, E, df)
         _params, self.log_likelihood_, self._hessian_ = self._fit_model(
             log_likelihood_function,
             Ts,
@@ -1799,7 +1804,11 @@ class ParametricRegressionFitter(RegressionFitter):
 
         regressors = {name: ["intercept"] for name in self._fitted_parameter_names}
         df = pd.DataFrame({"entry": self.entry, "intercept": 1, "w": self.weights})
-        model = self.__class__(penalizer=self.penalizer)
+
+        # some fitters will have custom __init__ fields that need to be provided (Piecewise, Spline...)
+        args_to_provide = {k: getattr(self, k) for k in getfullargspec(self.__class__.__init__).args if k != "self"}
+        args_to_provide["penalizer"] = self.penalizer
+        model = self.__class__(**args_to_provide)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -1896,7 +1905,7 @@ class ParametricRegressionFitter(RegressionFitter):
         if self.event_col:
             headers.append(("event col", "'%s'" % self.event_col))
         if self.weights_col:
-            headers.append(("weights col", self.weights_col))
+            headers.append(("weights col", "'%s'" % self.weights_col))
         if self.penalizer > 0:
             headers.append(("penalizer", self.penalizer))
         if self.robust:
@@ -2018,9 +2027,10 @@ class ParametricRegressionFitter(RegressionFitter):
             parameter_name: self.params_.loc[parameter_name].values for parameter_name in self._fitted_parameter_names
         }
 
+        columns = utils._get_index(df)
         if conditional_after is None:
             return pd.DataFrame(
-                self._cumulative_hazard(params_dict, np.tile(times, (n, 1)).T, Xs), index=times, columns=df.index
+                self._cumulative_hazard(params_dict, np.tile(times, (n, 1)).T, Xs), index=times, columns=columns
             )
         else:
             conditional_after = np.asarray(conditional_after).reshape((n, 1))
@@ -2033,7 +2043,7 @@ class ParametricRegressionFitter(RegressionFitter):
                     np.inf,
                 ),
                 index=times,
-                columns=df.index,
+                columns=columns,
             )
 
     def predict_hazard(self, df, *, times=None):
