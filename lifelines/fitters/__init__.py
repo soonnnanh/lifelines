@@ -1784,7 +1784,7 @@ class ParametricRegressionFitter(RegressionFitter):
                 score_vector = ll_gradient(params, ts, e, w, s, xs)
                 J += np.outer(score_vector, score_vector)
 
-            return self.variance_matrix_ @ J @ self.variance_matrix_
+            return self.variance_matrix_.values @ J @ self.variance_matrix_.values
 
     def _compute_confidence_intervals(self) -> pd.DataFrame:
         z = utils.inv_normal_cdf(1 - self.alpha / 2)
