@@ -537,7 +537,7 @@ class ParametricUnivariateFitter(UnivariateFitter):
 
     def _compute_standard_errors(self) -> pd.DataFrame:
         return pd.DataFrame(
-            [np.sqrt(self.variance_matrix_.diagonal())], index=["se"], columns=self._fitted_parameter_names
+            [np.sqrt(self.variance_matrix_.values.diagonal())], index=["se"], columns=self._fitted_parameter_names
         )
 
     def _compute_confidence_bounds_of_parameters(self) -> pd.DataFrame:
@@ -2084,7 +2084,7 @@ class ParametricRegressionFitter(RegressionFitter):
 
         return pd.DataFrame(self._hazard(params_dict, np.tile(times, (n, 1)).T, Xs), index=times, columns=df.index)
 
-    def predict_expectation(self, X) -> pd.DataFrame:
+    def predict_expectation(self, X, conditional_after=None) -> pd.DataFrame:
         r"""
         Compute the expected lifetime, :math:`E[T]`, using covariates X. This algorithm to compute the expectation is
         to use the fact that :math:`E[T] = \int_0^\inf P(T > t) dt = \int_0^\inf S(t) dt`. To compute the integral, we use the trapizoidal rule to approximate the integral.
@@ -2117,7 +2117,7 @@ class ParametricRegressionFitter(RegressionFitter):
         """
         warnings.warn("""Approximating the expected value using trapezoid rule.\n""", utils.ApproximationWarning)
         subjects = utils._get_index(X)
-        v = self.predict_survival_function(X)[subjects]
+        v = self.predict_survival_function(X, conditional_after=conditional_after)[subjects]
         return pd.DataFrame(trapz(v.values.T, v.index), index=subjects)
 
     @property

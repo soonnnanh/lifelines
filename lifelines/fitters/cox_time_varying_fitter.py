@@ -213,7 +213,9 @@ class CoxTimeVaryingFitter(BaseFitter):
 
         self.params_ = pd.Series(params_, index=df.columns, name="coef") / self._norm_std
         self.hazard_ratios_ = pd.Series(np.exp(self.params_), index=df.columns, name="exp(coef)")
-        self.variance_matrix_ = -inv(self._hessian_) / np.outer(self._norm_std, self._norm_std)
+        self.variance_matrix_ = pd.DataFrame(
+            -inv(self._hessian_) / np.outer(self._norm_std, self._norm_std), index=df.columns
+        )
         self.standard_errors_ = self._compute_standard_errors(
             normalize(df, self._norm_mean, self._norm_std), events, start, stop, weights
         )
@@ -829,5 +831,5 @@ See https://stats.stackexchange.com/questions/11109/how-to-deal-with-perfect-sep
         if self.robust:
             se = np.sqrt(self._compute_sandwich_estimator(X, events, start, stop, weights).diagonal())
         else:
-            se = np.sqrt(self.variance_matrix_.diagonal())
+            se = np.sqrt(self.variance_matrix_.values.diagonal())
         return pd.Series(se, index=self.params_.index, name="se")

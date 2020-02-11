@@ -154,6 +154,9 @@ class CoxPHFitter(RegressionFitter, ProportionalHazardMixin):
         is used similar to the `strata` expression in R.
         See http://courses.washington.edu/b515/l17.pdf.
 
+      n_baseline_knots: int
+        Used when `baseline_estimation_method` is "spline". Set the number of interior knots in the baseline hazard.
+
     Examples
     --------
     >>> from lifelines.datasets import load_rossi
@@ -205,7 +208,7 @@ class CoxPHFitter(RegressionFitter, ProportionalHazardMixin):
         super(CoxPHFitter, self).__init__(**kwargs)
         if penalizer < 0:
             raise ValueError("penalizer parameter must be >= 0.")
-        self.tie_method = tie_method
+
         self.penalizer = penalizer
         self.strata = strata
         self.l1_ratio = l1_ratio
@@ -380,7 +383,6 @@ class CoxPHFitter(RegressionFitter, ProportionalHazardMixin):
 
         self.standard_errors_ = self._compute_standard_errors(X_norm, T, E, weights)
         self.confidence_intervals_ = self._compute_confidence_intervals()
-
         self.baseline_survival_ = self._compute_baseline_survival()
 
         if hasattr(self, "_concordance_score_"):
