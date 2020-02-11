@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
+from typing import Optional
 from lifelines.fitters import KnownModelParametricUnivariateFitter
+from lifelines.fitters.mixins import SplineFitterMixin
 import autograd.numpy as np
 from lifelines.utils.safe_exp import safe_exp
-from lifelines import utils
 
 
-class SplineFitter(utils.SplineFitterMixin, KnownModelParametricUnivariateFitter):
+class SplineFitter(KnownModelParametricUnivariateFitter, SplineFitterMixin):
     r"""
     Model the cumulative hazard using cubic splines. This offers great flexibility and smoothness of the cumulative hazard.
 

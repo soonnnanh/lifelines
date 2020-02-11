@@ -7,15 +7,17 @@ This version and future versions of lifelines no longer support py35.
 ##### New features
  - `CoxPHFitter` has support for an elastic net penalty, which includes L1 and L2 regression.
  - `CoxPHFitter` has new baseline survival estimation methods. Specifically, `spline` now estimates the coefficients and baseline survival using splines. The traditional method, `breslow`, is still the default however.
+ - new `lifelines.fitters.mixins.ProportionalHazardMixin` that implements proportional hazard checks.
 
 ##### API Changes
  - The penalty in Cox models is now scaled by the number of observations. This makes it invariant to changing sample sizes. This change also make the penalty magnitude behave the same as any parametric regression model.
  - removed `_score_` from Cox model.
  - removed automatically adding `inf` from `PiecewiseExponentialRegressionFitter.breakpoints` and `PiecewiseExponentialFitter.breakpoints`
+ - `tie_method` was dropped from Cox models (it was always Efron anyways)
+ - Mixins are moved to `lifelines.fitters.mixins`
 
 ##### Bug fixes
  - Fixed `show_censors` with `KaplanMeierFitter.plot_cumulative_density` see issue #940.
-
 
 
 #### 0.23.9 - 2020-01-28

@@ -11,13 +11,12 @@ from scipy.linalg import solve as spsolve, LinAlgError, norm, inv
 from scipy.integrate import trapz
 from scipy import stats
 import pandas as pd
-from pandas.core.frame import DataFrame
-from pandas.core.indexes.base import Index
-from pandas.core.series import Series
+from pandas import DataFrame, Series, Index
 from autograd import numpy as anp
 from autograd import elementwise_grad
 
 from lifelines.fitters import RegressionFitter, ParametricRegressionFitter
+from lifelines.fitters.mixins import SplineFitterMixin, ProportionalHazardMixin
 from lifelines.plotting import set_kwargs_drawstyle
 from lifelines.statistics import _chisq_test_p_value, proportional_hazard_test, TimeTransformers, StatisticalResult
 from lifelines.utils.lowess import lowess
@@ -47,7 +46,6 @@ from lifelines.utils import (
     CensoringType,
     interpolate_at_times,
     format_p_value,
-    SplineFitterMixin,
 )
 
 __all__ = ["CoxPHFitter"]
@@ -55,7 +53,7 @@ __all__ = ["CoxPHFitter"]
 CONVERGENCE_DOCS = "Please see the following tips in the lifelines documentation: https://lifelines.readthedocs.io/en/latest/Examples.html#problems-with-convergence-in-the-cox-proportional-hazard-model"
 
 
-class _PHSplineFitter(ParametricRegressionFitter, SplineFitterMixin):
+class _PHSplineFitter(ParametricRegressionFitter, SplineFitterMixin, ProportionalHazardMixin):
     """
     Proportional Hazard model with single-knot cublic splines
 
@@ -67,9 +65,7 @@ class _PHSplineFitter(ParametricRegressionFitter, SplineFitterMixin):
     _KNOWN_MODEL = True
 
     def __init__(self, n_baseline_knots=1, *args, **kwargs):
-        self.n_baseline_knots = coalesce(
-            n_baseline_knots, 1
-        )  # TODO: this needs to be better. Should be no need to a coalesce
+        self.n_baseline_knots = n_baseline_knots
         self._fitted_parameter_names = ["beta_"] + ["phi%d_" % i for i in range(1, self.n_baseline_knots + 2)]
         super(_PHSplineFitter, self).__init__(*args, **kwargs)
 
@@ -127,9 +123,9 @@ class _BatchVsSingle:
         return self.SINGLE
 
 
-class CoxPHFitter(RegressionFitter):
+class CoxPHFitter(RegressionFitter, ProportionalHazardMixin):
     r"""
-    This class implements fitting Cox's proportional hazard model:
+    This class implements fitting Cox's proportional hazard model using Efron's method for ties.:
 
     .. math::  h(t|x) = h_0(t) \exp((x - \overline{x})' \beta)
 
@@ -138,10 +134,6 @@ class CoxPHFitter(RegressionFitter):
 
       alpha: float, optional (default=0.05)
         the level in the confidence intervals.
-
-      tie_method: string, optional
-        specify how the fitter should deal with ties. Currently only
-        'efron' is available.
 
       baseline_estimation_method: string, optional
         specify how the fitter should estimate the baseline. `breslow` or `spline`
@@ -202,7 +194,6 @@ class CoxPHFitter(RegressionFitter):
 
     def __init__(
         self,
-        tie_method: str = "efron",
         baseline_estimation_method: str = "breslow",
         penalizer: float = 0.0,
         strata: Optional[Union[List[str], str]] = None,
@@ -210,12 +201,10 @@ class CoxPHFitter(RegressionFitter):
         n_baseline_knots: int = 1,
         **kwargs,
     ) -> None:
+
         super(CoxPHFitter, self).__init__(**kwargs)
         if penalizer < 0:
             raise ValueError("penalizer parameter must be >= 0.")
-        if tie_method != "efron":
-            raise NotImplementedError("Only 'efron' is available at the moment.")
-
         self.tie_method = tie_method
         self.penalizer = penalizer
         self.strata = strata
@@ -1953,216 +1942,6 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
                 plt.legend()
                 axes.append(ax)
         return axes
-
-    def check_assumptions(
-        self,
-        training_df: DataFrame,
-        advice: bool = True,
-        show_plots: bool = False,
-        p_value_threshold: float = 0.01,
-        plot_n_bootstraps: int = 10,
-        columns: Optional[List[str]] = None,
-    ) -> None:
-        """
-        Use this function to test the proportional hazards assumption. See usage example at
-        https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html
-
-
-        Parameters
-        -----------
-
-        training_df: DataFrame
-            the original DataFrame used in the call to ``fit(...)`` or a sub-sampled version.
-        advice: bool, optional
-            display advice as output to the user's screen
-        show_plots: bool, optional
-            display plots of the scaled schoenfeld residuals and loess curves. This is an eyeball test for violations.
-            This will slow down the function significantly.
-        p_value_threshold: float, optional
-            the threshold to use to alert the user of violations. See note below.
-        plot_n_bootstraps:
-            in the plots displayed, also display plot_n_bootstraps bootstrapped loess curves. This will slow down
-            the function significantly.
-        columns: list, optional
-            specify a subset of columns to test.
-
-
-        Examples
-        ----------
-
-        >>> from lifelines.datasets import load_rossi
-        >>> from lifelines import CoxPHFitter
-        >>>
-        >>> rossi = load_rossi()
-        >>> cph = CoxPHFitter().fit(rossi, 'week', 'arrest')
-        >>>
-        >>> cph.check_assumptions(rossi)
-
-
-        Notes
-        -------
-        The ``p_value_threshold`` is arbitrarily set at 0.01. Under the null, some covariates
-        will be below the threshold (i.e. by chance). This is compounded when there are many covariates.
-
-        Similarly, when there are lots of observations, even minor deviances from the proportional hazard
-        assumption will be flagged.
-
-        With that in mind, it's best to use a combination of statistical tests and eyeball tests to
-        determine the most serious violations.
-
-
-        References
-        -----------
-        section 5 in https://socialsciences.mcmaster.ca/jfox/Books/Companion/appendices/Appendix-Cox-Regression.pdf,
-        http://www.mwsug.org/proceedings/2006/stats/MWSUG-2006-SD08.pdf,
-        http://eprints.lse.ac.uk/84988/1/06_ParkHendry2015-ReassessingSchoenfeldTests_Final.pdf
-        """
-
-        if not training_df.index.is_unique:
-            raise IndexError(
-                "`training_df` index should be unique for this exercise. Please make it unique or use `.reset_index(drop=True)` to force a unique index"
-            )
-
-        residuals = self.compute_residuals(training_df, kind="scaled_schoenfeld")
-        test_results = proportional_hazard_test(
-            self, training_df, time_transform=["rank", "km"], precomputed_residuals=residuals
-        )
-
-        residuals_and_duration = residuals.join(training_df[self.duration_col])
-
-        counter = 0
-        n = residuals_and_duration.shape[0]
-
-        for variable in self.params_.index.intersection(columns or self.params_.index):
-            minumum_observed_p_value = test_results.summary.loc[variable, "p"].min()
-            if np.round(minumum_observed_p_value, 2) > p_value_threshold:
-                continue
-
-            counter += 1
-
-            if counter == 1:
-                if advice:
-                    print(
-                        fill(
-                            """The ``p_value_threshold`` is set at %g. Even under the null hypothesis of no violations, some covariates will be below the threshold by chance. This is compounded when there are many covariates. Similarly, when there are lots of observations, even minor deviances from the proportional hazard assumption will be flagged."""
-                            % p_value_threshold,
-                            width=100,
-                        )
-                    )
-                    print()
-                    print(
-                        fill(
-                            """With that in mind, it's best to use a combination of statistical tests and visual tests to determine the most serious violations. Produce visual plots using ``check_assumptions(..., show_plots=True)`` and looking for non-constant lines. See link [A] below for a full example.""",
-                            width=100,
-                        )
-                    )
-                    print()
-                test_results.print_summary()
-                print()
-
-            print()
-            print(
-                "%d. Variable '%s' failed the non-proportional test: p-value is %s."
-                % (counter, variable, format_p_value(4)(minumum_observed_p_value)),
-                end="\n\n",
-            )
-
-            if advice:
-                values = training_df[variable]
-                value_counts = values.value_counts()
-                n_uniques = value_counts.shape[0]
-
-                # Arbitrary chosen 10 and 4 to check for ability to use strata col.
-                # This should capture dichotomous / low cardinality values.
-                if n_uniques <= 10 and value_counts.min() >= 5:
-                    print(
-                        fill(
-                            "   Advice: with so few unique values (only {0}), you can include `strata=['{1}', ...]` in the call in `.fit`. See documentation in link [E] below.".format(
-                                n_uniques, variable
-                            ),
-                            width=100,
-                        )
-                    )
-                else:
-                    print(
-                        fill(
-                            """   Advice 1: the functional form of the variable '{var}' might be incorrect. That is, there may be non-linear terms missing. The proportional hazard test used is very sensitive to incorrect functional forms. See documentation in link [D] below on how to specify a functional form.""".format(
-                                var=variable
-                            ),
-                            width=100,
-                        ),
-                        end="\n\n",
-                    )
-                    print(
-                        fill(
-                            """   Advice 2: try binning the variable '{var}' using pd.cut, and then specify it in `strata=['{var}', ...]` in the call in `.fit`. See documentation in link [B] below.""".format(
-                                var=variable
-                            ),
-                            width=100,
-                        ),
-                        end="\n\n",
-                    )
-                    print(
-                        fill(
-                            """   Advice 3: try adding an interaction term with your time variable. See documentation in link [C] below.""",
-                            width=100,
-                        ),
-                        end="\n\n",
-                    )
-
-            if show_plots:
-
-                from matplotlib import pyplot as plt
-
-                fig = plt.figure()
-
-                # plot variable against all time transformations.
-                for i, (transform_name, transformer) in enumerate(TimeTransformers().iter(["rank", "km"]), start=1):
-                    p_value = test_results.summary.loc[(variable, transform_name), "p"]
-
-                    ax = fig.add_subplot(1, 2, i)
-
-                    y = residuals_and_duration[variable]
-                    tt = transformer(self.durations, self.event_observed, self.weights)[self.event_observed.values]
-
-                    ax.scatter(tt, y, alpha=0.75)
-
-                    y_lowess = lowess(tt.values, y.values)
-                    ax.plot(tt, y_lowess, color="k", alpha=1.0, linewidth=2)
-
-                    # bootstrap some possible other lowess lines. This is an approximation of the 100% confidence intervals
-                    for _ in range(plot_n_bootstraps):
-                        ix = sorted(np.random.choice(n, n))
-                        tt_ = tt.values[ix]
-                        y_lowess = lowess(tt_, y.values[ix])
-                        ax.plot(tt_, y_lowess, color="k", alpha=0.30)
-
-                    best_xlim = ax.get_xlim()
-                    ax.hlines(0, 0, tt.max(), linestyles="dashed", linewidths=1)
-                    ax.set_xlim(best_xlim)
-
-                    ax.set_xlabel("%s-transformed time\n(p=%.4f)" % (transform_name, p_value), fontsize=10)
-
-                fig.suptitle("Scaled Schoenfeld residuals of '%s'" % variable, fontsize=14)
-                plt.tight_layout()
-                plt.subplots_adjust(top=0.90)
-
-        if advice and counter > 0:
-            print(
-                dedent(
-                    r"""
-                ---
-                [A]  https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html
-                [B]  https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html#Bin-variable-and-stratify-on-it
-                [C]  https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html#Introduce-time-varying-covariates
-                [D]  https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html#Modify-the-functional-form
-                [E]  https://lifelines.readthedocs.io/en/latest/jupyter_notebooks/Proportional%20hazard%20assumption.html#Stratification
-            """
-                )
-            )
-
-        if counter == 0:
-            print("Proportional hazard assumption looks okay.")
 
     @property
     def score_(self) -> float:
