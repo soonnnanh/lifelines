@@ -10,12 +10,14 @@ import pandas as pd
 from scipy import stats
 
 from numpy.linalg import norm, inv
-from scipy.linalg import solve as spsolve, LinAlgError
-
-
 from numpy import sum as array_sum_to_scalar
+from scipy.linalg import solve as spsolve, LinAlgError
+from autograd import elementwise_grad
+from autograd import numpy as anp
 
-from lifelines.fitters import BaseFitter
+
+from lifelines.fitters import RegressionFitter
+from lifelines.fitters.mixins import ProportionalHazardMixin
 from lifelines.utils.printer import Printer
 from lifelines.statistics import _chisq_test_p_value, StatisticalResult
 from lifelines.utils import (
@@ -44,7 +46,7 @@ __all__ = ["CoxTimeVaryingFitter"]
 matrix_axis_0_sum_to_1d_array = lambda m: np.sum(m, 0)
 
 
-class CoxTimeVaryingFitter(BaseFitter):
+class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
     r"""
     This class implements fitting Cox's time-varying proportional hazard model:
 
@@ -81,7 +83,7 @@ class CoxTimeVaryingFitter(BaseFitter):
 
     _KNOWN_MODEL = True
 
-    def __init__(self, alpha=0.05, penalizer=0.0, strata=None):
+    def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio: float = 0.0, strata=None):
         super(CoxTimeVaryingFitter, self).__init__(alpha=alpha)
         if penalizer < 0:
             raise ValueError("penalizer parameter must be >= 0.")
@@ -339,6 +341,11 @@ class CoxTimeVaryingFitter(BaseFitter):
         """
         assert precision <= 1.0, "precision must be less than or equal to 1."
 
+        # soft penalizer functions, from https://www.cs.ubc.ca/cgi-bin/tr/2009/TR-2009-19.pdf
+        soft_abs = lambda x, a: 1 / a * (anp.logaddexp(0, -a * x) + anp.logaddexp(0, a * x))
+        d_soft_abs = elementwise_grad(soft_abs)
+        dd_soft_abs = elementwise_grad(d_soft_abs)
+
         _, d = df.shape
 
         # make sure betas are correct size.
@@ -380,9 +387,12 @@ class CoxTimeVaryingFitter(BaseFitter):
                 self._log_likelihood_null = ll
 
             if self.penalizer > 0:
-                # add the gradient and hessian of the l2 term
-                g -= self.penalizer * beta
-                h.flat[:: d + 1] -= self.penalizer
+                g -= (
+                    n * 0.5 * self.penalizer * (self.l1_ratio * d_soft_abs(beta, 1.5 ** i) + (1 - self.l1_ratio) * beta)
+                )
+                h[np.diag_indices(d)] -= (
+                    n * 0.5 * self.penalizer * (self.l1_ratio * dd_soft_abs(beta, 1.5 ** i) + (1 - self.l1_ratio))
+                )
 
             try:
                 # reusing a piece to make g * inv(h) * g.T faster later

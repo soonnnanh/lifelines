@@ -68,10 +68,10 @@ class LogNormalAFTFitter(ParametericAFTRegressionFitter):
     score_: float
         the concordance index of the model.
     """
+    _primary_parameter_name = "mu_"
+    _ancillary_parameter_name = "sigma_"
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0, fit_intercept=True, model_ancillary=False):
-        self._primary_parameter_name = "mu_"
-        self._ancillary_parameter_name = "sigma_"
         super(LogNormalAFTFitter, self).__init__(alpha, penalizer, l1_ratio, fit_intercept, model_ancillary)
 
     def _cumulative_hazard(

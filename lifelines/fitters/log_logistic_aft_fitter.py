@@ -69,10 +69,10 @@ class LogLogisticAFTFitter(ParametericAFTRegressionFitter):
     # about 25% faster than BFGS
     _scipy_fit_method = "SLSQP"
     _scipy_fit_options = {"ftol": 1e-6, "maxiter": 200}
+    _ancillary_parameter_name = "beta_"
+    _primary_parameter_name = "alpha_"
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0, fit_intercept=True, model_ancillary=False):
-        self._ancillary_parameter_name = "beta_"
-        self._primary_parameter_name = "alpha_"
         super(LogLogisticAFTFitter, self).__init__(alpha, penalizer, l1_ratio, fit_intercept)
 
     def _cumulative_hazard(self, params, T, Xs):

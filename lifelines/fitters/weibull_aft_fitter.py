@@ -79,6 +79,8 @@ class WeibullAFTFitter(ParametericAFTRegressionFitter, ProportionalHazardMixin):
     # about 25% faster than BFGS
     _scipy_fit_method = "SLSQP"
     _scipy_fit_options = {"ftol": 1e-10, "maxiter": 200}
+    _ancillary_parameter_name = "rho_"
+    _primary_parameter_name = "lambda_"
 
     def __init__(
         self,
@@ -88,8 +90,6 @@ class WeibullAFTFitter(ParametericAFTRegressionFitter, ProportionalHazardMixin):
         fit_intercept: bool = True,
         model_ancillary: bool = False,
     ) -> None:
-        self._ancillary_parameter_name = "rho_"
-        self._primary_parameter_name = "lambda_"
         super(WeibullAFTFitter, self).__init__(alpha, penalizer, l1_ratio, fit_intercept, model_ancillary)
 
     def _cumulative_hazard(

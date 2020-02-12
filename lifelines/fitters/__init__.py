@@ -266,7 +266,7 @@ class ParametricUnivariateFitter(UnivariateFitter):
     _KNOWN_MODEL = False
     _MIN_PARAMETER_VALUE = 1e-9
     _scipy_fit_method = "L-BFGS-B"
-    _scipy_fit_options: Dict[str, Any]
+    _scipy_fit_options: Dict[str, Any] = {}
     _fitted_parameter_names: List[str]
 
     def __init__(self, *args, **kwargs):
@@ -1121,15 +1121,59 @@ class KnownModelParametricUnivariateFitter(ParametricUnivariateFitter):
 
 
 class RegressionFitter(BaseFitter):
+
+    _KNOWN_MODEL = False
+    _ALLOWED_RESIDUALS = {"schoenfeld", "score", "delta_beta", "deviance", "martingale", "scaled_schoenfeld"}
+
     def __init__(self, *args, **kwargs):
         super(RegressionFitter, self).__init__(*args, **kwargs)
+
+    def compute_residuals(self, training_dataframe: pd.DataFrame, kind: str) -> pd.DataFrame:
+        """
+        Compute the residuals the model.
+
+        Parameters
+        ----------
+        training_dataframe : DataFrame
+            the same training DataFrame given in `fit`
+        kind : string
+            {'schoenfeld', 'score', 'delta_beta', 'deviance', 'martingale', 'scaled_schoenfeld'}
+
+        """
+        assert kind in self._ALLOWED_RESIDUALS, "kind must be in %s" % self._ALLOWED_RESIDUALS
+
+        warnings.filterwarnings("ignore", category=utils.ConvergenceWarning)
+        X, Ts, E, weights, shuffled_original_index, _ = self._preprocess_dataframe(training_dataframe)
+
+        resids = getattr(self, "_compute_%s" % kind)(X, Ts, E, weights, index=shuffled_original_index)
+        return resids
+
+    def _preprocess_dataframe(self, training_dataframe):
+        raise NotImplementedError()
+
+    def _compute_schoenfeld(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
+
+    def _compute_score(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
+
+    def _compute_delta_beta(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
+
+    def _compute_deviance(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
+
+    def _compute_martingale(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
+
+    def _compute_scale_schoenfeld(self, X, T, E, weights, index=None):
+        raise NotImplementedError()
 
 
 class ParametricRegressionFitter(RegressionFitter):
 
     _scipy_fit_method = "BFGS"
     _scipy_fit_options: Dict[str, Any] = dict()
-    _KNOWN_MODEL = False
 
     def __init__(self, alpha=0.05, penalizer=0.0, l1_ratio=0.0):
         super(ParametricRegressionFitter, self).__init__(alpha=alpha)
@@ -1179,7 +1223,7 @@ class ParametricRegressionFitter(RegressionFitter):
 
     def _log_1m_sf(self, params, T, Xs):
         # equal to log(cdf), but often easier to express with sf.
-        return anp.log1p(self._survival_function(params, T, Xs))
+        return anp.log1p(-self._survival_function(params, T, Xs))
 
     def _survival_function(self, params, T, Xs):
         return anp.clip(anp.exp(-self._cumulative_hazard(params, T, Xs)), 1e-12, 1 - 1e-12)
@@ -1306,7 +1350,6 @@ class ParametricRegressionFitter(RegressionFitter):
 
         """
         self.duration_col = duration_col
-        self._time_cols = [duration_col]
 
         df = df.copy()
 
@@ -1402,7 +1445,6 @@ class ParametricRegressionFitter(RegressionFitter):
         """
         self.upper_bound_col = upper_bound_col
         self.lower_bound_col = lower_bound_col
-        self._time_cols = [lower_bound_col, upper_bound_col]
 
         df = df.copy()
 
@@ -1492,7 +1534,6 @@ class ParametricRegressionFitter(RegressionFitter):
 
         """
         self.duration_col = duration_col
-        self._time_cols = [duration_col]
 
         df = df.copy()
 
@@ -1785,7 +1826,7 @@ class ParametricRegressionFitter(RegressionFitter):
                 score_vector = ll_gradient(params, ts, e, w, s, xs)
                 J += np.outer(score_vector, score_vector)
 
-            return self.variance_matrix_.values @ J @ self.variance_matrix_.valuesg
+            return self.variance_matrix_.values @ J @ self.variance_matrix_.values
 
     def _compute_confidence_intervals(self) -> pd.DataFrame:
         z = utils.inv_normal_cdf(1 - self.alpha / 2)
@@ -2411,7 +2452,6 @@ class ParametericAFTRegressionFitter(ParametricRegressionFitter):
 
         """
         self.duration_col = duration_col
-        self._time_cols = [duration_col]
         self.fit_intercept = utils.coalesce(fit_intercept, self.fit_intercept)
 
         df = df.copy()
@@ -2571,7 +2611,6 @@ class ParametericAFTRegressionFitter(ParametricRegressionFitter):
         self.lower_bound_col = lower_bound_col
         self.upper_bound_col = upper_bound_col
         self.fit_intercept = utils.coalesce(fit_intercept, self.fit_intercept)
-        self._time_cols = [lower_bound_col, upper_bound_col]
 
         df = df.copy()
 

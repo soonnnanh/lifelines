@@ -1243,27 +1243,6 @@ See https://stats.stackexchange.com/q/11109/11867 for more.\n",
 
         return score_residuals * weights[:, None]
 
-    def compute_residuals(self, training_dataframe: DataFrame, kind: str) -> pd.DataFrame:
-        """
-        Compute the residuals the model.
-
-        Parameters
-        ----------
-        training_dataframe : DataFrame
-            the same training DataFrame given in `fit`
-        kind : string
-            {'schoenfeld', 'score', 'delta_beta', 'deviance', 'martingale', 'scaled_schoenfeld'}
-
-        """
-        ALLOWED_RESIDUALS = {"schoenfeld", "score", "delta_beta", "deviance", "martingale", "scaled_schoenfeld"}
-        assert kind in ALLOWED_RESIDUALS, "kind must be in %s" % ALLOWED_RESIDUALS
-
-        warnings.filterwarnings("ignore", category=ConvergenceWarning)
-        X, T, E, weights, shuffled_original_index, _ = self._preprocess_dataframe(training_dataframe)
-
-        resids = getattr(self, "_compute_%s" % kind)(X, T, E, weights, index=shuffled_original_index)
-        return resids
-
     def _compute_confidence_intervals(self) -> pd.DataFrame:
         ci = 100 * (1 - self.alpha)
         z = inv_normal_cdf(1 - self.alpha / 2)
