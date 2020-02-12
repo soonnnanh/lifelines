@@ -15,6 +15,7 @@ This version and future versions of lifelines no longer support py35.
  - removed automatically adding `inf` from `PiecewiseExponentialRegressionFitter.breakpoints` and `PiecewiseExponentialFitter.breakpoints`
  - `tie_method` was dropped from Cox models (it was always Efron anyways)
  - Mixins are moved to `lifelines.fitters.mixins`
+ - `CoxTimeVaryingFitter` no longer requires an `id_col`. It's optional, and some checks may be done for integrity if provided.
 
 ##### Bug fixes
  - Fixed `show_censors` with `KaplanMeierFitter.plot_cumulative_density` see issue #940.

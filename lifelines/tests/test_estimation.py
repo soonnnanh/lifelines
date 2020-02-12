@@ -4267,6 +4267,17 @@ class TestCoxTimeVaryingFitter:
         npt.assert_almost_equal(ctv.summary["se(coef)"].values, [1.229, 1.206], decimal=3)
         npt.assert_almost_equal(ctv.summary["p"].values, [0.14, 0.56], decimal=2)
 
+    def test_that_id_col_is_optional(self, dfcv):
+
+        ctv_with_id = CoxTimeVaryingFitter().fit(
+            dfcv, id_col="id", start_col="start", stop_col="stop", event_col="event"
+        )
+        ctv_without_id = CoxTimeVaryingFitter().fit(
+            dfcv.drop("id", axis=1), start_col="start", stop_col="stop", event_col="event"
+        )
+
+        assert_frame_equal(ctv_without_id.summary, ctv_with_id.summary)
+
     def test_what_happens_to_nans(self, ctv, dfcv):
         """
         from http://www.math.ucsd.edu/~rxu/math284/slect7.pdf

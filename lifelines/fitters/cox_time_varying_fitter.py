@@ -95,11 +95,11 @@ class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
     def fit(
         self,
         df,
-        id_col,
         event_col,
         start_col="start",
         stop_col="stop",
         weights_col=None,
+        id_col=None,
         show_progress=False,
         step_size=None,
         robust=False,
@@ -117,9 +117,6 @@ class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
            `event_col`, plus other covariates. `duration_col` refers to
            the lifetimes of the subjects. `event_col` refers to whether
            the 'death' events was observed: 1 if observed, 0 else (censored).
-        id_col: string
-            A subject could have multiple rows in the DataFrame. This column contains
-           the unique identifier per subject.
         event_col: string
            the column in DataFrame that contains the subjects' death
            observation. If left as None, assume all individuals are non-censored.
@@ -129,6 +126,10 @@ class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
             the column that contains the end of a subject's time period.
         weights_col: string, optional
             the column that contains (possibly time-varying) weight of each subject-period row.
+        id_col: string, optional
+            A subject could have multiple rows in the DataFrame. This column contains
+           the unique identifier per subject. If not provided, it's up to the
+           user to make sure that there are no violations.
         show_progress: since the fitter is iterative, show convergence
            diagnostics.
         robust: bool, optional (default: True)
@@ -165,7 +166,7 @@ class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
 
         df = df.copy()
 
-        if not (id_col in df and event_col in df and start_col in df and stop_col in df):
+        if not (event_col in df and start_col in df and stop_col in df):
             raise KeyError("A column specified in the call to `fit` does not exist in the DataFrame provided.")
 
         if weights_col is None:
@@ -179,15 +180,14 @@ class CoxTimeVaryingFitter(RegressionFitter, ProportionalHazardMixin):
             if (df[weights_col] <= 0).any():
                 raise ValueError("values in weights_col must be positive.")
 
-        df = df.rename(
-            columns={id_col: "id", event_col: "event", start_col: "start", stop_col: "stop", weights_col: "__weights"}
-        )
+        df = df.rename(columns={event_col: "event", start_col: "start", stop_col: "stop", weights_col: "__weights"})
 
-        if self.strata is None:
-            df = df.set_index("id")
-        else:
-            df = df.set_index(_to_list(self.strata) + ["id"])  # TODO: needs to be a list
-            df = df.sort_index()
+        if self.strata is not None and self.id_col is not None:
+            df = df.set_index(_to_list(self.strata) + [id_col])
+        elif self.strata is not None and self.id_col is None:
+            df = df.set_index(_to_list(self.strata))
+        elif self.strata is None and self.id_col is not None:
+            df = df.set_index([id_col])
 
         events, start, stop = (
             pass_for_numeric_dtypes_or_raise_array(df.pop("event")).astype(bool),
